@@ -1,0 +1,109 @@
+services:
+  # FastAPI 后端服务
+  db-monitor-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: db-monitor-backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://monitor:monitor123@postgres:5432/db_monitor
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=db-monitor-super-secret-token
+      - INFLUXDB_ORG=db-monitor
+      - INFLUXDB_BUCKET=metrics
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=production-secret-key-change-me
+      - ENCRYPTION_KEY=production-encryption-key-32bytes!
+      - DEFAULT_ADMIN_USERNAME=admin
+      - DEFAULT_ADMIN_PASSWORD=admin123
+      - COLLECTOR_INTERVAL_SECONDS=30
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    # 允许容器访问宿主机上的数据库（127.0.0.1 在容器内指向自身，需用此地址）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - db-monitor-net
+
+  # Vue 前端 + Nginx
+  db-monitor-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: db-monitor-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8088}:80"
+    depends_on:
+      - db-monitor-backend
+    networks:
+      - db-monitor-net
+
+  # InfluxDB 2.0 时序数据库
+  influxdb:
+    image: influxdb:2.7
+    container_name: db-monitor-influxdb
+    restart: unless-stopped
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=admin123456
+      - DOCKER_INFLUXDB_INIT_ORG=db-monitor
+      - DOCKER_INFLUXDB_INIT_BUCKET=metrics
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=db-monitor-super-secret-token
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - db-monitor-net
+
+  # PostgreSQL 关系数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: db-monitor-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=monitor
+      - POSTGRES_PASSWORD=monitor123
+      - POSTGRES_DB=db_monitor
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d db_monitor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - db-monitor-net
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: db-monitor-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - db-monitor-net
+
+volumes:
+  backend-data:
+  influxdb-data:
+  postgres-data:
+  redis-data:
+
+networks:
+  db-monitor-net:
+    driver: bridge
